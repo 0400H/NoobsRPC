@@ -11,13 +11,13 @@
 #include <asio/detail/noncopyable.hpp>
 namespace boost
 {
-	namespace asio
-	{
-		using namespace ::asio;
-	}
-	namespace system {
-		using ::std::error_code;
-	}
+    namespace asio
+    {
+        using namespace ::asio;
+    }
+    namespace system {
+        using ::std::error_code;
+    }
 }
 #else
 #include <boost/asio.hpp>

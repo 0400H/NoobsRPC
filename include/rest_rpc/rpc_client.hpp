@@ -275,9 +275,9 @@ public:
   }
 
   /**
-	     * This internal_async_call is used for other language client.
-	     * We use callback to handle the result is received, so we should not
-	     * add the future to the future map.
+         * This internal_async_call is used for other language client.
+         * We use callback to handle the result is received, so we should not
+         * add the future to the future map.
    */
   long internal_async_call(const std::string &encoded_func_name_and_args) {
     auto p = std::make_shared<std::promise<req_result>>();

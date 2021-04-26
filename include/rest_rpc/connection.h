@@ -13,28 +13,28 @@
 using boost::asio::ip::tcp;
 
 namespace rest_rpc {
-	namespace rpc_service {
+    namespace rpc_service {
         struct ssl_configure {
             std::string cert_file;
             std::string key_file;
         };
 
-		class connection : public std::enable_shared_from_this<connection>, private asio::noncopyable {
-		public:
-			connection(boost::asio::io_service& io_service, std::size_t timeout_seconds, router& router)
-				: socket_(io_service),
-				body_(INIT_BUF_SIZE),
-				timer_(io_service),
-				timeout_seconds_(timeout_seconds),
-				has_closed_(false),
-				router_(router){
-			}
+        class connection : public std::enable_shared_from_this<connection>, private asio::noncopyable {
+        public:
+            connection(boost::asio::io_service& io_service, std::size_t timeout_seconds, router& router)
+                : socket_(io_service),
+                body_(INIT_BUF_SIZE),
+                timer_(io_service),
+                timeout_seconds_(timeout_seconds),
+                has_closed_(false),
+                router_(router){
+            }
 
-			~connection() { 
+            ~connection() { 
                 close(); 
             }
 
-			void start() { 
+            void start() { 
                 if (is_ssl() && !has_shake_) {
                     async_handshake();
                 }
@@ -43,56 +43,56 @@ namespace rest_rpc {
                 }
             }
 
-			tcp::socket& socket() { return socket_; }
+            tcp::socket& socket() { return socket_; }
 
-			bool has_closed() const { return has_closed_; }
-			uint64_t request_id() const {
-				return req_id_;
-			}
+            bool has_closed() const { return has_closed_; }
+            uint64_t request_id() const {
+                return req_id_;
+            }
 
-			void response(uint64_t req_id, std::string data, request_type req_type = request_type::req_res) {
-				auto len = data.size();
-				assert(len < MAX_BUF_LEN);
+            void response(uint64_t req_id, std::string data, request_type req_type = request_type::req_res) {
+                auto len = data.size();
+                assert(len < MAX_BUF_LEN);
 
-				std::unique_lock<std::mutex> lock(write_mtx_);
-				write_queue_.emplace_back(message_type{ req_id, req_type, std::make_shared<std::string>(std::move(data)) });
-				if (write_queue_.size() > 1) {
-					return;
-				}
+                std::unique_lock<std::mutex> lock(write_mtx_);
+                write_queue_.emplace_back(message_type{ req_id, req_type, std::make_shared<std::string>(std::move(data)) });
+                if (write_queue_.size() > 1) {
+                    return;
+                }
 
-				write();
-			}
+                write();
+            }
 
-			template<typename T>
-			void pack_and_response(uint64_t req_id, T data) {
-				auto result = msgpack_codec::pack_args_str(result_code::OK, std::move(data));
-				response(req_id, std::move(result));
-			}
+            template<typename T>
+            void pack_and_response(uint64_t req_id, T data) {
+                auto result = msgpack_codec::pack_args_str(result_code::OK, std::move(data));
+                response(req_id, std::move(result));
+            }
 
-			void set_conn_id(int64_t id) { conn_id_ = id; }
+            void set_conn_id(int64_t id) { conn_id_ = id; }
 
-			int64_t conn_id() const { return conn_id_; }
+            int64_t conn_id() const { return conn_id_; }
 
-			const std::vector<char>& body() const {
-				return body_;
-			}
+            const std::vector<char>& body() const {
+                return body_;
+            }
 
-			std::string remote_address() const {
-				if (has_closed_) {
-					return "";
-				}
+            std::string remote_address() const {
+                if (has_closed_) {
+                    return "";
+                }
 
-				return socket_.remote_endpoint().address().to_string();
-			}
-			
-			void publish(const std::string& key, const std::string& data) {
-				auto result = msgpack_codec::pack_args_str(result_code::OK, key, data);
-				response(0, std::move(result), request_type::sub_pub);
-			}
+                return socket_.remote_endpoint().address().to_string();
+            }
+            
+            void publish(const std::string& key, const std::string& data) {
+                auto result = msgpack_codec::pack_args_str(result_code::OK, key, data);
+                response(0, std::move(result), request_type::sub_pub);
+            }
 
-			void set_callback(std::function<void(std::string, std::string, std::weak_ptr<connection>)> callback) {
-				callback_ = std::move(callback);
-			}
+            void set_callback(std::function<void(std::string, std::string, std::weak_ptr<connection>)> callback) {
+                callback_ = std::move(callback);
+            }
 
             void init_ssl_context(const ssl_configure& ssl_conf) {
 #ifdef CINATRA_ENABLE_SSL
@@ -122,109 +122,109 @@ namespace rest_rpc {
 #endif
             }
 
-		private:
-			void read_head() {
-				reset_timer();
-				auto self(this->shared_from_this());
+        private:
+            void read_head() {
+                reset_timer();
+                auto self(this->shared_from_this());
                 async_read_head([this, self](boost::system::error_code ec, std::size_t length) {
-					if (!socket_.is_open()) {
-						//LOG(INFO) << "socket already closed";
-						return;
-					}
+                    if (!socket_.is_open()) {
+                        //LOG(INFO) << "socket already closed";
+                        return;
+                    }
 
-					if (!ec) {
-						//const uint32_t body_len = *((int*)(head_));
-						//req_id_ = *((std::uint64_t*)(head_ + sizeof(int32_t)));
-						rpc_header* header = (rpc_header*)(head_);
-						req_id_ = header->req_id;
-						const uint32_t body_len = header->body_len;
-						req_type_ = header->req_type;
-						if (body_len > 0 && body_len < MAX_BUF_LEN) {
-							if (body_.size() < body_len) { body_.resize(body_len); }
-							read_body(body_len);
-							return;
-						}
+                    if (!ec) {
+                        //const uint32_t body_len = *((int*)(head_));
+                        //req_id_ = *((std::uint64_t*)(head_ + sizeof(int32_t)));
+                        rpc_header* header = (rpc_header*)(head_);
+                        req_id_ = header->req_id;
+                        const uint32_t body_len = header->body_len;
+                        req_type_ = header->req_type;
+                        if (body_len > 0 && body_len < MAX_BUF_LEN) {
+                            if (body_.size() < body_len) { body_.resize(body_len); }
+                            read_body(body_len);
+                            return;
+                        }
 
-						if (body_len == 0) {  // nobody, just head, maybe as heartbeat.
-							cancel_timer();
-							read_head();
-						}
-						else {
+                        if (body_len == 0) {  // nobody, just head, maybe as heartbeat.
+                            cancel_timer();
+                            read_head();
+                        }
+                        else {
                             print("invalid body len");
-							close();
-						}
-					}
-					else {
+                            close();
+                        }
+                    }
+                    else {
                         print(ec);
-						close();
-					}
-				});
-			}
+                        close();
+                    }
+                });
+            }
 
-			void read_body(std::size_t size) {
-				auto self(this->shared_from_this());
-				async_read(size, [this, self](boost::system::error_code ec, std::size_t length) {
-					cancel_timer();
+            void read_body(std::size_t size) {
+                auto self(this->shared_from_this());
+                async_read(size, [this, self](boost::system::error_code ec, std::size_t length) {
+                    cancel_timer();
 
-					if (!socket_.is_open()) {
-						//LOG(INFO) << "socket already closed";
-						return;
-					}
+                    if (!socket_.is_open()) {
+                        //LOG(INFO) << "socket already closed";
+                        return;
+                    }
 
-					if (!ec) {
-						read_head();
-						if (req_type_ == request_type::req_res) {
-							router_.route<connection>(body_.data(), length, this->shared_from_this());
-						}
-						else if (req_type_ == request_type::sub_pub) {
-							try {
-								msgpack_codec codec;
-								auto p = codec.unpack<std::tuple<std::string, std::string>>(body_.data(), length);
-								callback_(std::move(std::get<0>(p)), std::move(std::get<1>(p)), this->shared_from_this());
-							}
-							catch (const std::exception& ex) {
+                    if (!ec) {
+                        read_head();
+                        if (req_type_ == request_type::req_res) {
+                            router_.route<connection>(body_.data(), length, this->shared_from_this());
+                        }
+                        else if (req_type_ == request_type::sub_pub) {
+                            try {
+                                msgpack_codec codec;
+                                auto p = codec.unpack<std::tuple<std::string, std::string>>(body_.data(), length);
+                                callback_(std::move(std::get<0>(p)), std::move(std::get<1>(p)), this->shared_from_this());
+                            }
+                            catch (const std::exception& ex) {
                                 print(ex);
-							}							
-						}
-					}
-					else {
-						//LOG(INFO) << ec.message();
-					}
-				});
-			}
+                            }                            
+                        }
+                    }
+                    else {
+                        //LOG(INFO) << ec.message();
+                    }
+                });
+            }
 
-			void write() {
-				auto& msg = write_queue_.front();
-				write_size_ = (uint32_t)msg.content->size();
-				std::array<boost::asio::const_buffer, 4> write_buffers;
-				write_buffers[0] = boost::asio::buffer(&write_size_, sizeof(uint32_t));
-				write_buffers[1] = boost::asio::buffer(&msg.req_id, sizeof(uint64_t));
-				write_buffers[2] = boost::asio::buffer(&msg.req_type, sizeof(request_type));
-				write_buffers[3] = boost::asio::buffer(msg.content->data(), write_size_);
+            void write() {
+                auto& msg = write_queue_.front();
+                write_size_ = (uint32_t)msg.content->size();
+                std::array<boost::asio::const_buffer, 4> write_buffers;
+                write_buffers[0] = boost::asio::buffer(&write_size_, sizeof(uint32_t));
+                write_buffers[1] = boost::asio::buffer(&msg.req_id, sizeof(uint64_t));
+                write_buffers[2] = boost::asio::buffer(&msg.req_type, sizeof(request_type));
+                write_buffers[3] = boost::asio::buffer(msg.content->data(), write_size_);
 
-				auto self = this->shared_from_this();
-				async_write(write_buffers,
-					[this, self](boost::system::error_code ec, std::size_t length) {
-					on_write(ec, length);
-				});
-			}
+                auto self = this->shared_from_this();
+                async_write(write_buffers,
+                    [this, self](boost::system::error_code ec, std::size_t length) {
+                    on_write(ec, length);
+                });
+            }
 
-			void on_write(boost::system::error_code ec, std::size_t length) {
-				if (ec) {
+            void on_write(boost::system::error_code ec, std::size_t length) {
+                if (ec) {
                     print(ec);
-					close(false);
-					return;
-				}
+                    close(false);
+                    return;
+                }
 
-				if (has_closed()) { return; }
+                if (has_closed()) { return; }
 
-				std::unique_lock<std::mutex> lock(write_mtx_);
-				write_queue_.pop_front();
+                std::unique_lock<std::mutex> lock(write_mtx_);
+                write_queue_.pop_front();
 
-				if (!write_queue_.empty()) {
-					write();
-				}
-			}
+                if (!write_queue_.empty()) {
+                    write();
+                }
+            }
 
             void async_handshake() {
 #ifdef CINATRA_ENABLE_SSL
@@ -287,26 +287,26 @@ namespace rest_rpc {
                 }
             }
 
-			void reset_timer() {
-				if (timeout_seconds_ == 0) { return; }
+            void reset_timer() {
+                if (timeout_seconds_ == 0) { return; }
 
-				auto self(this->shared_from_this());
-				timer_.expires_from_now(std::chrono::seconds(timeout_seconds_));
-				timer_.async_wait([this, self](const boost::system::error_code& ec) {
-					if (has_closed()) { return; }
+                auto self(this->shared_from_this());
+                timer_.expires_from_now(std::chrono::seconds(timeout_seconds_));
+                timer_.async_wait([this, self](const boost::system::error_code& ec) {
+                    if (has_closed()) { return; }
 
-					if (ec) { return; }
+                    if (ec) { return; }
 
-					//LOG(INFO) << "rpc connection timeout";
-					close(false);
-				});
-			}
+                    //LOG(INFO) << "rpc connection timeout";
+                    close(false);
+                });
+            }
 
-			void cancel_timer() {
-				if (timeout_seconds_ == 0) { return; }
+            void cancel_timer() {
+                if (timeout_seconds_ == 0) { return; }
 
-				timer_.cancel();
-			}
+                timer_.cancel();
+            }
 
             void close(bool close_ssl = true) {
 #ifdef CINATRA_ENABLE_SSL
@@ -343,29 +343,29 @@ namespace rest_rpc {
                 print(ex.what());
             }
 
-			tcp::socket socket_;
+            tcp::socket socket_;
 #ifdef CINATRA_ENABLE_SSL
             std::unique_ptr<boost::asio::ssl::stream<boost::asio::ip::tcp::socket&>> ssl_stream_ = nullptr;
 #endif
             bool has_shake_ = false;
-			char head_[HEAD_LEN];
-			std::vector<char> body_;
-			std::uint64_t req_id_;
-			request_type req_type_;
+            char head_[HEAD_LEN];
+            std::vector<char> body_;
+            std::uint64_t req_id_;
+            request_type req_type_;
 
-			uint32_t write_size_ = 0;
-			std::mutex write_mtx_;
+            uint32_t write_size_ = 0;
+            std::mutex write_mtx_;
 
-			asio::steady_timer timer_;
-			std::size_t timeout_seconds_;
-			int64_t conn_id_ = 0;
-			bool has_closed_;
+            asio::steady_timer timer_;
+            std::size_t timeout_seconds_;
+            int64_t conn_id_ = 0;
+            bool has_closed_;
 
-			std::deque<message_type> write_queue_;
-			std::function<void(std::string, std::string, std::weak_ptr<connection>)> callback_;
+            std::deque<message_type> write_queue_;
+            std::function<void(std::string, std::string, std::weak_ptr<connection>)> callback_;
       router& router_;
-		};
-	}  // namespace rpc_service
+        };
+    }  // namespace rpc_service
 }  // namespace rest_rpc
 
 #endif  // REST_RPC_CONNECTION_H_

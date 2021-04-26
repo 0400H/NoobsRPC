@@ -12,7 +12,7 @@ namespace rpc_service {
 
   template<typename... Args>
   static buffer_type pack_args(Args&&... args) {
-	buffer_type buffer(init_size);
+    buffer_type buffer(init_size);
     msgpack::pack(buffer, std::forward_as_tuple(std::forward<Args>(args)...));
     return buffer;
   }
@@ -20,14 +20,14 @@ namespace rpc_service {
   template<typename Arg, typename... Args,
            typename = typename std::enable_if<std::is_enum<Arg>::value>::type>
   static std::string pack_args_str(Arg arg, Args&&... args) {
-	buffer_type buffer(init_size);
+    buffer_type buffer(init_size);
     msgpack::pack(buffer, std::forward_as_tuple((int)arg, std::forward<Args>(args)...));
-	return std::string(buffer.data(), buffer.size());
+    return std::string(buffer.data(), buffer.size());
   }
 
   template<typename T>
   buffer_type pack(T&& t) const {
-	buffer_type buffer;
+    buffer_type buffer;
     msgpack::pack(buffer, std::forward<T>(t));
     return buffer;
   }

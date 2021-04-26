@@ -34,20 +34,20 @@ namespace rest_rpc{
         using args_tuple_2nd = std::tuple<std::string, std::remove_const_t<std::remove_reference_t<Args>>...>;
     };
 
-	template<typename Ret>
-	struct function_traits<Ret()> {
-	public:
-		enum { arity = 0 };
-		typedef Ret function_type();
-		typedef Ret return_type;
-		using stl_function_type = std::function<function_type>;
-		typedef Ret(*pointer)();
+    template<typename Ret>
+    struct function_traits<Ret()> {
+    public:
+        enum { arity = 0 };
+        typedef Ret function_type();
+        typedef Ret return_type;
+        using stl_function_type = std::function<function_type>;
+        typedef Ret(*pointer)();
 
-		typedef std::tuple<> tuple_type;
-		typedef std::tuple<> bare_tuple_type;
-		using args_tuple = std::tuple<std::string>;
-		using args_tuple_2nd = std::tuple<std::string>;
-	};
+        typedef std::tuple<> tuple_type;
+        typedef std::tuple<> bare_tuple_type;
+        using args_tuple = std::tuple<std::string>;
+        using args_tuple_2nd = std::tuple<std::string>;
+    };
 
     template<typename Ret, typename... Args>
     struct function_traits<Ret(*)(Args...)> : function_traits<Ret(Args...)>{};
@@ -96,11 +96,11 @@ namespace rest_rpc{
                              std::make_index_sequence<N>{});
     }
 
-	template<int N, typename... Args>
-	using nth_type_of = std::tuple_element_t<N, std::tuple<Args...>>;
+    template<int N, typename... Args>
+    using nth_type_of = std::tuple_element_t<N, std::tuple<Args...>>;
 
-	template<typename... Args>
-	using last_type_of = nth_type_of<sizeof...(Args)-1, Args...>;
+    template<typename... Args>
+    using last_type_of = nth_type_of<sizeof...(Args)-1, Args...>;
 }
 
 #endif //REST_RPC_META_UTIL_HPP
