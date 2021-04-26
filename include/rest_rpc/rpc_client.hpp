@@ -135,9 +135,9 @@ public:
       return true;
     }
 
+    std::unique_lock<std::mutex> lock(conn_mtx_);
     has_wait_ = true;
-    std::unique_lock<std::mutex> lck(conn_mtx_);
-    bool result = conn_cond_.wait_for(lck, std::chrono::seconds(timeout),
+    bool result = conn_cond_.wait_for(lock, std::chrono::seconds(timeout),
                                       [this] { return has_connected_.load(); });
     has_wait_ = false;
     return has_connected_;
@@ -172,8 +172,9 @@ public:
 #endif
     }
 
-    if (!has_connected_)
+    if (!has_connected_) {
       return;
+    }
 
     has_connected_ = false;
     socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
@@ -262,7 +263,7 @@ public:
 
     uint64_t fu_id = 0;
     {
-      std::lock_guard<std::mutex> lck(cb_mtx_);
+      std::lock_guard<std::mutex> lock(cb_mtx_);
       fu_id_++;
       fu_id = fu_id_;
       future_map_.emplace(fu_id, std::move(p));
@@ -284,7 +285,7 @@ public:
     uint64_t fu_id = 0;
 
     {
-      std::lock_guard<std::mutex> lck(cb_mtx_);
+      std::lock_guard<std::mutex> lock(cb_mtx_);
       fu_id_++;
       fu_id = fu_id_;
     }
@@ -310,7 +311,7 @@ public:
 
     uint64_t cb_id = 0;
     {
-      std::lock_guard<std::mutex> lck(cb_mtx_);
+      std::lock_guard<std::mutex> lock(cb_mtx_);
       callback_id_++;
       callback_id_ |= (uint64_t(1) << 63);
       cb_id = callback_id_;
@@ -592,9 +593,9 @@ private:
       temp_req_id_ = req_id;
       auto cb_flag = req_id >> 63;
       if (cb_flag) {
-        std::unique_lock<std::mutex> lck(cb_mtx_);
+        std::unique_lock<std::mutex> lock(cb_mtx_);
         std::shared_ptr<call_t> cb_ptr(std::move(callback_map_[req_id]));
-        lck.unlock();
+        lock.unlock();
 
         assert(cb_ptr);
         if (!cb_ptr->has_timeout()) {
@@ -604,10 +605,10 @@ private:
           cb_ptr->callback(asio::error::make_error_code(asio::error::timed_out), {});
         }
 
-        lck.lock();
+        lock.lock();
         callback_map_.erase(req_id);
       } else {
-        std::lock_guard<std::mutex> lck(cb_mtx_);
+        std::lock_guard<std::mutex> lock(cb_mtx_);
         auto &f = future_map_[req_id];
         if (ec) {
           std::cout << ec.message() << std::endl;
@@ -646,7 +647,7 @@ private:
 
   void clear_cache() {
     {
-      std::lock_guard<std::mutex> lck(write_mtx_);
+      std::lock_guard<std::mutex> lock(write_mtx_);
       while (!outbox_.empty()) {
         ::free((char *)outbox_.front().content.data());
         outbox_.pop_front();
@@ -654,7 +655,7 @@ private:
     }
 
     {
-      std::lock_guard<std::mutex> lck(cb_mtx_);
+      std::lock_guard<std::mutex> lock(cb_mtx_);
       callback_map_.clear();
       future_map_.clear();
     }

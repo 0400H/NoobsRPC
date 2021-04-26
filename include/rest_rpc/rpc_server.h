@@ -30,20 +30,20 @@ namespace rest_rpc {
 #ifdef CINATRA_ENABLE_SSL
                 ssl_conf_ = std::move(ssl_conf);
 #else
-                assert(false);//please add definition CINATRA_ENABLE_SSL, not allowed coming in this branch
+                assert(false); // please add definition CINATRA_ENABLE_SSL, not allowed coming in this branch
 #endif
             }
 
             ~rpc_server() {
                 {
-                    std::unique_lock<std::mutex> lock(mtx_);
+                    std::lock_guard<std::mutex> lock(mtx_);
                     stop_check_ = true;
                     cv_.notify_all();                    
                 }
                 check_thread_->join();
 
                 {
-                    std::unique_lock<std::mutex> lock(sub_mtx_);
+                    std::lock_guard<std::mutex> lock(sub_mtx_);
                     stop_check_pub_sub_ = true;
                     sub_cv_.notify_all();                    
                 }
@@ -65,12 +65,12 @@ namespace rest_rpc {
 
             template<ExecMode model = ExecMode::sync, typename Function>
             void register_handler(std::string const& name, const Function& f) {
-        router_.register_handler<model>(name, f);
+                router_.register_handler<model>(name, f);
             }
 
             template<ExecMode model = ExecMode::sync, typename Function, typename Self>
             void register_handler(std::string const& name, const Function& f, Self* self) {
-        router_.register_handler<model>(name, f, self);
+                router_.register_handler<model>(name, f, self);
             }
 
             void set_conn_timeout_callback(std::function<void(int64_t)> callback) {
@@ -88,7 +88,7 @@ namespace rest_rpc {
             }
 
             std::set<std::string> get_token_list() {
-                std::unique_lock<std::mutex> lock(sub_mtx_);
+                std::lock_guard<std::mutex> lock(sub_mtx_);
                 return token_list_;
             }
 
@@ -96,7 +96,7 @@ namespace rest_rpc {
             void do_accept() {
                 conn_.reset(new connection(io_service_pool_.get_io_service(), timeout_seconds_, router_));
                 conn_->set_callback([this](std::string key, std::string token, std::weak_ptr<connection> conn) {
-                    std::unique_lock<std::mutex> lock(sub_mtx_);
+                    std::lock_guard<std::mutex> lock(sub_mtx_);
                     sub_map_.emplace(std::move(key) + token, conn);
                     if (!token.empty()) {
                         token_list_.emplace(std::move(token));
@@ -105,16 +105,16 @@ namespace rest_rpc {
 
                 acceptor_.async_accept(conn_->socket(), [this](boost::system::error_code ec) {
                     if (ec) {
-                        //LOG(INFO) << "acceptor error: " << ec.message();
-                    }
-                    else {
+                        std::cout << "acceptor error: " << ec.message() << std::endl;
+                    } else {
 #ifdef CINATRA_ENABLE_SSL
                         if (!ssl_conf_.cert_file.empty()) {
                             conn_->init_ssl_context(ssl_conf_);
                         }
 #endif
                         conn_->start();
-                        std::unique_lock<std::mutex> lock(mtx_);
+
+                        std::lock_guard<std::mutex> lock(mtx_);
                         conn_->set_conn_id(conn_id_);
                         connections_.emplace(conn_id_++, conn_);
                     }
@@ -162,21 +162,23 @@ namespace rest_rpc {
             template<typename T>
             void publish(std::string key, std::string token, T data) {
                 {
-                    std::unique_lock<std::mutex> lock(sub_mtx_);
-                    if (sub_map_.empty())
+                    std::lock_guard<std::mutex> lock(sub_mtx_);
+                    if (sub_map_.empty()) {
                         return;
+                    }
                 }
 
-                std::shared_ptr<std::string> shared_data = get_shared_data<T>(std::move(data));        
-                std::unique_lock<std::mutex> lock(sub_mtx_);
-                auto range = sub_map_.equal_range(key + token);
-                for (auto it = range.first; it != range.second; ++it) {
-                    auto conn = it->second.lock();
-                    if (conn == nullptr || conn->has_closed()) {
-                        continue;
+                {
+                    std::lock_guard<std::mutex> lock(sub_mtx_);
+                    std::shared_ptr<std::string> shared_data = get_shared_data<T>(std::move(data));
+                    auto range = sub_map_.equal_range(key + token);
+                    for (auto it = range.first; it != range.second; ++it) {
+                        auto conn = it->second.lock();
+                        if (conn == nullptr || conn->has_closed()) {
+                            continue;
+                        }
+                        conn->publish(key + token, *shared_data);
                     }
-
-                    conn->publish(key + token, *shared_data);
                 }
             }
 
@@ -217,8 +219,8 @@ namespace rest_rpc {
             std::shared_ptr<std::thread> pub_sub_thread_;
             bool stop_check_pub_sub_ = false;
 
-      ssl_configure ssl_conf_;
-      router router_;
+            ssl_configure ssl_conf_;
+            router router_;
         };
     }  // namespace rpc_service
 }  // namespace rest_rpc
