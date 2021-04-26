@@ -100,8 +100,9 @@ public:
   }
 
   bool connect(size_t timeout = 3, bool is_ssl = false) {
-    if (has_connected_)
+    if (has_connected_) {
       return true;
+    }
 
     assert(port_ != 0);
     if (is_ssl) {
@@ -135,8 +136,8 @@ public:
       return true;
     }
 
-    std::unique_lock<std::mutex> lock(conn_mtx_);
     has_wait_ = true;
+    std::unique_lock<std::mutex> lock(conn_mtx_);
     bool result = conn_cond_.wait_for(lock, std::chrono::seconds(timeout),
                                       [this] { return has_connected_.load(); });
     has_wait_ = false;
@@ -174,12 +175,12 @@ public:
 
     if (!has_connected_) {
       return;
+    } else {
+      has_connected_ = false;
+      socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+      socket_.close(ec);
+      clear_cache();
     }
-
-    has_connected_ = false;
-    socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-    socket_.close(ec);
-    clear_cache();
   }
 
   void set_error_callback(std::function<void(boost::system::error_code)> f) {
@@ -256,8 +257,7 @@ public:
 #endif
 
   template <CallModel model, typename... Args>
-  std::future<req_result> async_call(const std::string &rpc_name,
-                                     Args &&... args) {
+  std::future<req_result> async_call(const std::string &rpc_name, Args &&... args) {
     auto p = std::make_shared<std::promise<req_result>>();
     std::future<req_result> future = p->get_future();
 
@@ -281,9 +281,7 @@ public:
          * add the future to the future map.
    */
   long internal_async_call(const std::string &encoded_func_name_and_args) {
-    // auto p = std::make_shared<std::promise<req_result>>();
     uint64_t fu_id = 0;
-
     {
       std::lock_guard<std::mutex> lock(cb_mtx_);
       fu_id_++;
@@ -298,14 +296,14 @@ public:
   }
 
   template <size_t TIMEOUT = DEFAULT_TIMEOUT, typename... Args>
-  void
-  async_call(const std::string &rpc_name,
-             std::function<void(boost::system::error_code, string_view)> cb,
-             Args &&... args) {
+  void async_call(const std::string &rpc_name,
+                  std::function<void(boost::system::error_code, string_view)> cb,
+                  Args &&... args) {
     if (!has_connected_) {
-      if (cb)
+      if (cb) {
         cb(boost::asio::error::make_error_code(boost::asio::error::not_connected),
            "not connected");
+      }
       return;
     }
 
@@ -389,39 +387,38 @@ private:
     assert(port_ != 0);
     auto addr = boost::asio::ip::address::from_string(host_);
     socket_.async_connect({addr, port_},
-                          [this](const boost::system::error_code &ec) {
-                            if (has_connected_) {
-                              return;
-                            }
+      [this](const boost::system::error_code &ec) {
+        if (has_connected_) {
+          return;
+        } else if (ec) {
+          // std::cout << ec.message() << std::endl;
 
-                            if (ec) {
-                              // std::cout << ec.message() << std::endl;
+          has_connected_ = false;
 
-                              has_connected_ = false;
+          if (reconnect_cnt_ <= 0) {
+            return;
+          }
 
-                              if (reconnect_cnt_ <= 0) {
-                                return;
-                              }
+          if (reconnect_cnt_ > 0) {
+            reconnect_cnt_--;
+          }
 
-                              if (reconnect_cnt_ > 0) {
-                                reconnect_cnt_--;
-                              }
+          async_reconnect();
+        } else {
+          // std::cout<<"connected ok"<<std::endl;
+          if (is_ssl()) {
+            handshake();
+            return;
+          }
 
-                              async_reconnect();
-                            } else {
-                              // std::cout<<"connected ok"<<std::endl;
-                              if (is_ssl()) {
-                                handshake();
-                                return;
-                              }
-
-                              has_connected_ = true;
-                              do_read();
-                              resend_subscribe();
-                              if (has_wait_)
-                                conn_cond_.notify_one();
-                            }
-                          });
+          has_connected_ = true;
+          do_read();
+          resend_subscribe();
+          if (has_wait_) {
+            conn_cond_.notify_one();
+          }
+        }
+      });
   }
 
   void async_reconnect() {
@@ -448,14 +445,15 @@ private:
     assert(size < MAX_BUF_LEN);
     client_message_type msg{req_id, type, {message.release(), size}};
 
-    std::unique_lock<std::mutex> lock(write_mtx_);
+    std::lock_guard<std::mutex> lock(write_mtx_);
     outbox_.emplace_back(std::move(msg));
+
     if (outbox_.size() > 1) {
       // outstanding async_write
       return;
+    } else {
+      write();
     }
-
-    write();
   }
 
   void write() {
@@ -465,30 +463,27 @@ private:
     write_buffers[0] = boost::asio::buffer(&write_size_, sizeof(int32_t));
     write_buffers[1] = boost::asio::buffer(&msg.req_id, sizeof(uint64_t));
     write_buffers[2] = boost::asio::buffer(&msg.req_type, sizeof(request_type));
-    write_buffers[3] =
-        boost::asio::buffer((char *)msg.content.data(), write_size_);
+    write_buffers[3] = boost::asio::buffer((char *)msg.content.data(), write_size_);
 
-    async_write(write_buffers, [this](const boost::system::error_code &ec,
-                                      const size_t length) {
+    async_write(write_buffers, [this](const boost::system::error_code &ec, const size_t length) {
       if (ec) {
         has_connected_ = false;
         close(false);
         error_callback(ec);
-
         return;
-      }
+      } else {
+        std::lock_guard<std::mutex> lock(write_mtx_);
+        if (outbox_.empty()) {
+          return;
+        } else {
+          ::free((char *)outbox_.front().content.data());
+          outbox_.pop_front();
 
-      std::unique_lock<std::mutex> lock(write_mtx_);
-      if (outbox_.empty()) {
-        return;
-      }
-
-      ::free((char *)outbox_.front().content.data());
-      outbox_.pop_front();
-
-      if (!outbox_.empty()) {
-        // more messages to send
-        this->write();
+          if (!outbox_.empty()) {
+            // more messages to send
+            this->write();
+          }
+        }
       }
     });
   }
@@ -497,12 +492,10 @@ private:
     async_read_head(
         [this](const boost::system::error_code &ec, const size_t length) {
           if (!socket_.is_open()) {
-            // LOG(INFO) << "socket already closed";
+            std::cout << "socket already closed" << std::endl;
             has_connected_ = false;
             return;
-          }
-
-          if (!ec) {
+          } else if (!ec) {
             // const uint32_t body_len = *((uint32_t*)(head_));
             // auto req_id = *((std::uint64_t*)(head_ + sizeof(int32_t)));
             // auto req_type = *(request_type*)(head_ + sizeof(int32_t) + sizeof(int64_t));
@@ -514,13 +507,10 @@ private:
               }
               read_body(header->req_id, header->req_type, body_len);
               return;
-            }
-
-            if (body_len == 0 || body_len > MAX_BUF_LEN) {
-              // LOG(INFO) << "invalid body len";
+            } else if (body_len == 0 || body_len > MAX_BUF_LEN) {
+              std::cout << "invalid body len" << std::endl;
               close();
-              error_callback(
-                  asio::error::make_error_code(asio::error::message_size));
+              error_callback(asio::error::make_error_code(asio::error::message_size));
               return;
             }
           } else {
@@ -534,16 +524,13 @@ private:
     async_read(body_len, [this, req_id, req_type, body_len](
                              boost::system::error_code ec, std::size_t length) {
       // cancel_timer();
-
       if (!socket_.is_open()) {
-        // LOG(INFO) << "socket already closed";
+        std::cout << "socket already closed" << std::endl;
         call_back(req_id,
                   asio::error::make_error_code(asio::error::connection_aborted),
                   {});
         return;
-      }
-
-      if (!ec) {
+      } else if (!ec) {
         // entier body
         if (req_type == request_type::req_res) {
           call_back(req_id, ec, {body_.data(), body_len});
@@ -551,14 +538,13 @@ private:
           callback_sub(ec, {body_.data(), body_len});
         } else {
           close();
-          error_callback(
-              asio::error::make_error_code(asio::error::invalid_argument));
+          error_callback(asio::error::make_error_code(asio::error::invalid_argument));
           return;
         }
 
         do_read();
       } else {
-        // LOG(INFO) << ec.message();
+        // std::cout << ec.message() << std::endl;
         has_connected_ = false;
         close();
         error_callback(ec);
@@ -590,11 +576,13 @@ private:
       on_result_received_callback_(req_id, std::string(data.data(), data.size()));
     } else {
       // For CPP client.
+      
       temp_req_id_ = req_id;
       auto cb_flag = req_id >> 63;
       if (cb_flag) {
         std::unique_lock<std::mutex> lock(cb_mtx_);
         std::shared_ptr<call_t> cb_ptr(std::move(callback_map_[req_id]));
+
         lock.unlock();
 
         assert(cb_ptr);
@@ -606,21 +594,22 @@ private:
         }
 
         lock.lock();
+
         callback_map_.erase(req_id);
       } else {
         std::lock_guard<std::mutex> lock(cb_mtx_);
         auto &f = future_map_[req_id];
         if (ec) {
-          std::cout << ec.message() << std::endl;
+          // std::cout << ec.message() << std::endl;
           if (!f) {
-            std::cout << "invalid req_id" << std::endl;
+            // std::cout << "invalid req_id" << std::endl;
             return;
           }
-        } else {
-          assert(f);
-          f->set_value(req_result{data});
-          future_map_.erase(req_id);
         }
+
+        assert(f);
+        f->set_value(req_result{data});
+        future_map_.erase(req_id);
       }
     }
   }
@@ -640,8 +629,7 @@ private:
 
       it->second(data);
     } catch (const std::exception & /*ex*/) {
-      error_callback(
-          asio::error::make_error_code(asio::error::invalid_argument));
+      error_callback(asio::error::make_error_code(asio::error::invalid_argument));
     }
   }
 

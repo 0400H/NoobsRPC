@@ -40,6 +40,7 @@ namespace rest_rpc {
                     stop_check_ = true;
                     cv_.notify_all();                    
                 }
+
                 check_thread_->join();
 
                 {
@@ -47,8 +48,8 @@ namespace rest_rpc {
                     stop_check_pub_sub_ = true;
                     sub_cv_.notify_all();                    
                 }
-                pub_sub_thread_->join();
 
+                pub_sub_thread_->join();
                 io_service_pool_.stop();
                 if(thd_){
                     thd_->join();
@@ -100,7 +101,7 @@ namespace rest_rpc {
                     sub_map_.emplace(std::move(key) + token, conn);
                     if (!token.empty()) {
                         token_list_.emplace(std::move(token));
-                    }                    
+                    }
                 });
 
                 acceptor_.async_accept(conn_->socket(), [this](boost::system::error_code ec) {
@@ -113,10 +114,11 @@ namespace rest_rpc {
                         }
 #endif
                         conn_->start();
-
-                        std::lock_guard<std::mutex> lock(mtx_);
-                        conn_->set_conn_id(conn_id_);
-                        connections_.emplace(conn_id_++, conn_);
+                        {
+                            std::lock_guard<std::mutex> lock(mtx_);
+                            conn_->set_conn_id(conn_id_);
+                            connections_.emplace(conn_id_++, conn_);
+                        }
                     }
 
                     do_accept();
@@ -161,15 +163,10 @@ namespace rest_rpc {
 
             template<typename T>
             void publish(std::string key, std::string token, T data) {
-                {
-                    std::lock_guard<std::mutex> lock(sub_mtx_);
-                    if (sub_map_.empty()) {
-                        return;
-                    }
-                }
-
-                {
-                    std::lock_guard<std::mutex> lock(sub_mtx_);
+                std::lock_guard<std::mutex> lock(sub_mtx_);
+                if (sub_map_.empty()) {
+                    return;
+                } else {
                     std::shared_ptr<std::string> shared_data = get_shared_data<T>(std::move(data));
                     auto range = sub_map_.equal_range(key + token);
                     for (auto it = range.first; it != range.second; ++it) {
