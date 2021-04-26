@@ -9,8 +9,8 @@ cd ../../examples
 mkdir build
 
 cd build
-rm -rf *
-cmake ..
+# rm -rf *
+cmake .. 
 make -j `nproc`
 
 cd ..

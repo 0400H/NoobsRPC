@@ -1,23 +1,24 @@
 cmake_minimum_required(VERSION 3.1)
 project(example)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -std=c++11")
-
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_BUILD_TYPE Debug)
+# variable_watch(CMAKE_BUILD_TYPE)
 
-set(ENABLE_SSL OFF)
+find_package(Boost COMPONENTS system filesystem REQUIRED)
+
+set(ENABLE_SSL ON)
 if (ENABLE_SSL)
     add_definitions(-DCINATRA_ENABLE_SSL)
     message(STATUS "Use SSL")
 endif()
-
-find_package(Boost COMPONENTS system filesystem REQUIRED)
 
 include_directories(
     "/usr/local/include"
     "../include"
     "../thirdparty/msgpack-c/include")
 
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -std=c++11")
 add_executable(basic_server server/main.cpp)
 add_executable(basic_client client/main.cpp)
 

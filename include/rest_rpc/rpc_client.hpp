@@ -136,8 +136,8 @@ public:
     }
 
     has_wait_ = true;
-    std::unique_lock<std::mutex> lock(conn_mtx_);
-    bool result = conn_cond_.wait_for(lock, std::chrono::seconds(timeout),
+    std::unique_lock<std::mutex> lck(conn_mtx_);
+    bool result = conn_cond_.wait_for(lck, std::chrono::seconds(timeout),
                                       [this] { return has_connected_.load(); });
     has_wait_ = false;
     return has_connected_;
@@ -262,7 +262,7 @@ public:
 
     uint64_t fu_id = 0;
     {
-      std::unique_lock<std::mutex> lock(cb_mtx_);
+      std::lock_guard<std::mutex> lck(cb_mtx_);
       fu_id_++;
       fu_id = fu_id_;
       future_map_.emplace(fu_id, std::move(p));
@@ -280,13 +280,15 @@ public:
          * add the future to the future map.
    */
   long internal_async_call(const std::string &encoded_func_name_and_args) {
-    auto p = std::make_shared<std::promise<req_result>>();
+    // auto p = std::make_shared<std::promise<req_result>>();
     uint64_t fu_id = 0;
+
     {
-      std::unique_lock<std::mutex> lock(cb_mtx_);
+      std::lock_guard<std::mutex> lck(cb_mtx_);
       fu_id_++;
       fu_id = fu_id_;
     }
+
     msgpack::sbuffer sbuffer;
     sbuffer.write(encoded_func_name_and_args.data(),
                   encoded_func_name_and_args.size());
@@ -301,15 +303,14 @@ public:
              Args &&... args) {
     if (!has_connected_) {
       if (cb)
-        cb(boost::asio::error::make_error_code(
-               boost::asio::error::not_connected),
+        cb(boost::asio::error::make_error_code(boost::asio::error::not_connected),
            "not connected");
       return;
     }
 
     uint64_t cb_id = 0;
     {
-      std::unique_lock<std::mutex> lock(cb_mtx_);
+      std::lock_guard<std::mutex> lck(cb_mtx_);
       callback_id_++;
       callback_id_ |= (uint64_t(1) << 63);
       cb_id = callback_id_;
@@ -585,44 +586,40 @@ private:
       // For Java client.
       // TODO(qwang): Call java callback.
       // handle error.
-      on_result_received_callback_(req_id,
-                                   std::string(data.data(), data.size()));
+      on_result_received_callback_(req_id, std::string(data.data(), data.size()));
     } else {
       // For CPP client.
       temp_req_id_ = req_id;
       auto cb_flag = req_id >> 63;
       if (cb_flag) {
-        std::shared_ptr<call_t> cl = nullptr;
-        {
-          std::unique_lock<std::mutex> lock(cb_mtx_);
-          cl = std::move(callback_map_[req_id]);
-        }
+        std::unique_lock<std::mutex> lck(cb_mtx_);
+        std::shared_ptr<call_t> cb_ptr(std::move(callback_map_[req_id]));
+        lck.unlock();
 
-        assert(cl);
-        if (!cl->has_timeout()) {
-          cl->cancel();
-          cl->callback(ec, data);
+        assert(cb_ptr);
+        if (!cb_ptr->has_timeout()) {
+          cb_ptr->cancel();
+          cb_ptr->callback(ec, data);
         } else {
-          cl->callback(asio::error::make_error_code(asio::error::timed_out),
-                       {});
+          cb_ptr->callback(asio::error::make_error_code(asio::error::timed_out), {});
         }
 
-        std::unique_lock<std::mutex> lock(cb_mtx_);
+        lck.lock();
         callback_map_.erase(req_id);
       } else {
-        std::unique_lock<std::mutex> lock(cb_mtx_);
+        std::lock_guard<std::mutex> lck(cb_mtx_);
         auto &f = future_map_[req_id];
         if (ec) {
-          // LOG<<ec.message();
+          std::cout << ec.message() << std::endl;
           if (!f) {
-            // std::cout << "invalid req_id" << std::endl;
+            std::cout << "invalid req_id" << std::endl;
             return;
           }
+        } else {
+          assert(f);
+          f->set_value(req_result{data});
+          future_map_.erase(req_id);
         }
-
-        assert(f);
-        f->set_value(req_result{data});
-        future_map_.erase(req_id);
       }
     }
   }
@@ -630,8 +627,7 @@ private:
   void callback_sub(const boost::system::error_code &ec, string_view result) {
     rpc_service::msgpack_codec codec;
     try {
-      auto tp = codec.unpack<std::tuple<int, std::string, std::string>>(
-          result.data(), result.size());
+      auto tp = codec.unpack<std::tuple<int, std::string, std::string>>(result.data(), result.size());
       auto code = std::get<0>(tp);
       auto &key = std::get<1>(tp);
       auto &data = std::get<2>(tp);
@@ -650,7 +646,7 @@ private:
 
   void clear_cache() {
     {
-      std::unique_lock<std::mutex> lock(write_mtx_);
+      std::lock_guard<std::mutex> lck(write_mtx_);
       while (!outbox_.empty()) {
         ::free((char *)outbox_.front().content.data());
         outbox_.pop_front();
@@ -658,7 +654,7 @@ private:
     }
 
     {
-      std::unique_lock<std::mutex> lock(cb_mtx_);
+      std::lock_guard<std::mutex> lck(cb_mtx_);
       callback_map_.clear();
       future_map_.clear();
     }
@@ -673,8 +669,7 @@ private:
     }
   }
 
-  class call_t : asio::noncopyable,
-                 public std::enable_shared_from_this<call_t> {
+  class call_t : asio::noncopyable, public std::enable_shared_from_this<call_t> {
   public:
     call_t(asio::io_service &ios,
            std::function<void(boost::system::error_code, string_view)> cb,
