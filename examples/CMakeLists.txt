@@ -10,7 +10,7 @@ find_package(Boost COMPONENTS system filesystem REQUIRED)
 set(ENABLE_SSL ON)
 if (ENABLE_SSL)
     add_definitions(-DCINATRA_ENABLE_SSL)
-    message(STATUS "Use SSL")
+    message(STATUS "ENABLE_SSL")
 endif()
 
 include_directories(
@@ -19,6 +19,7 @@ include_directories(
     "../thirdparty/msgpack-c/include")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -std=c++11")
+
 add_executable(basic_server server/main.cpp)
 add_executable(basic_client client/main.cpp)
 

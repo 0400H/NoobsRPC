@@ -16,69 +16,163 @@ struct person {
     MSGPACK_DEFINE(id, name, age);
 };
 
-void test_sync_call() {
+bool client_connect(rpc_client & client,
+                  bool is_ssl=true,
+                  unsigned short port=9000,
+                  const std::string& host="127.0.0.1",
+                  size_t timeout = 3) {
+    client.set_error_callback([](boost::system::error_code ec) {
+        std::cout << ec.message() << "" << std::endl;
+    });
+
+    if (is_ssl) {
+        std::cout << "start with ssl!" << std::endl;
+#ifdef CINATRA_ENABLE_SSL
+    client.set_ssl_context_callback([](boost::asio::ssl::context& ctx) {
+        ctx.set_verify_mode(boost::asio::ssl::context::verify_peer);
+        ctx.load_verify_file("server.crt");
+    });
+#endif
+    } else {
+        std::cout << "start without ssl!" << std::endl;
+    }
+
+    return client.connect(host, port, is_ssl, timeout);
+}
+
+void test_connect(bool is_ssl=true) {
+    std::cout << "test_connect start!" << std::endl;
+
+    rpc_client client;
+    client.enable_auto_reconnect(); //automatic reconnect
+    client.enable_auto_heartbeat(); //automatic heartbeat
+    client_connect(client, is_ssl, 9000, "127.0.0.1");
+
+    int count = 0;
+    while (true) {
+        if (client.has_connected()) {
+            std::cout << "connected ok" << std::endl;
+            break;
+        } else {
+            std::cout << "connected failed: " << count++ << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    std::getchar();
+    std::cout << "test_connect finished!" << std::endl;
+}
+
+void test_sync_call(bool is_ssl=true) {
     std::cout << "test_sync_call start!" << std::endl;
 
-    rpc_client client("127.0.0.1", 9000);
-    bool r = client.connect();
+    rpc_client client;
+    bool r = client_connect(client, is_ssl, 9000, "127.0.0.1");
     if (!r) {
         std::cout << "connect failed!" << std::endl;
         return;
     }
 
     {
+        std::cout << "test service echo start!" << std::endl;
         auto result = client.call<std::string>("echo", "service: echo");
         std::cout << result << std::endl;
+        std::cout << "test service echo finished!" << std::endl;
     }
 
     {
+        std::cout << "test service get_person start!" << std::endl;
         try {
-            auto result = client.call<50, person>("get_person");
+            auto result = client.call<0, person>("get_person");
             std::cout << result.name << std::endl;
+
             client.close();
-            bool r = client.connect();
+            bool r = client_connect(client, is_ssl, 9000, "127.0.0.1");
+            if (!r) {
+                std::cout << "connect failed!" << std::endl;
+                return;
+            }
+
             result = client.call<50, person>("get_person");
             std::cout << result.name << std::endl;
         } catch (const std::exception & ex) {
             std::cout << ex.what() << std::endl;
         }
+        std::cout << "test service get_person finished!" << std::endl;
+    }
+
+    {
+        std::cout << "test service get_person_name start!" << std::endl;
+        try {
+            rpc_client client;
+            bool r = client_connect(client, is_ssl, 9000, "127.0.0.1");
+            if (!r) {
+                std::cout << "connect failed!" << std::endl;
+                return;
+            }
+
+            auto result = client.call<std::string>("get_person_name", person{ 1, "Tom", 20 });
+            std::cout << result << std::endl;
+        } catch (const std::exception & e) {
+            std::cout << e.what() << std::endl;
+        }
+        std::cout << "test service get_person_name finished!" << std::endl;
     }
 
     std::getchar();
     std::cout << "test_sync_call finished!" << std::endl;
 }
 
-void test_async_call() {
+void test_async_call(bool is_ssl=true) {
     std::cout << "test_async_call start!" << std::endl;
 
     rpc_client client;
-    bool r = client.connect("127.0.0.1", 9000);
+    bool r = client_connect(client, is_ssl, 9000, "127.0.0.1");
     if (!r) {
         std::cout << "connect failed!" << std::endl;
         return;
     }
 
-    for (size_t i = 0; i < 100; i=i+2) {
-        std::string task1 = "task_" + std::to_string(i);
-        // zero means no timeout check, no param means using default timeout(5s)
-        client.async_call<0>("echo", 
-            [](const boost::system::error_code &ec, string_view data) {
-                auto str = as<std::string>(data);
-                std::cout << "echo " << str << std::endl;
-            }, task1);
+    {
+        for (size_t i = 0; i < 100; i=i+2) {
+            std::string task1 = "task_" + std::to_string(i);
+            // zero means no timeout check, no param means using default timeout(5s)
+            client.async_call<0>("echo", 
+                [](const boost::system::error_code &ec, string_view data) {
+                    if (ec) {
+                        std::cout << "error code: " << ec.value()
+                                  << ", error msg: "<< ec.message() << std::endl;
+                    } else {
+                        auto str = as<std::string>(data);
+                        std::cout << "echo " << str << std::endl;
+                    }
+                }, task1);
 
-        std::string task2 = "task_" + std::to_string(i+1);
-        // set timeout 500ms
-        client.async_call<500>("async_echo",
-            [](const boost::system::error_code &ec, string_view data) {
-                if (ec) {
-                    std::cout << "error code: " << ec.value()
-                              << ", error msg: "<< ec.message() << std::endl;
-                } else {
-                    auto str = as<std::string>(data);
-                    std::cout << "async_echo " << str << std::endl;
-                }
-            }, task2);
+            std::string task2 = "task_" + std::to_string(i+1);
+            // set timeout 500ms
+            client.async_call<500>("async_echo",
+                [](const boost::system::error_code &ec, string_view data) {
+                    if (ec) {
+                        std::cout << "error code: " << ec.value()
+                                  << ", error msg: "<< ec.message() << std::endl;
+                    } else {
+                        auto str = as<std::string>(data);
+                        std::cout << "async_echo " << str << std::endl;
+                    }
+                }, task2);
+        }
+    }
+
+    {
+        client.set_error_callback([](boost::system::error_code ec) { std::cout << ec.message() << std::endl; });
+
+        auto f = client.async_call<FUTURE>("get_person");
+        if (f.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout) {
+            std::cout << "timeout" << std::endl;
+        } else {
+            auto p = f.get().as<person>();
+            std::cout << p.name << std::endl;
+        }
     }
 
     // client.run();
@@ -87,216 +181,11 @@ void test_async_call() {
     std::cout << "test_async_call finished!" << std::endl;
 }
 
-void test_ssl() {
-    std::cout << "test_ssl start!" << std::endl;
-
-    bool is_ssl = true;
-    rpc_client client;
-    client.set_error_callback([](boost::system::error_code ec) {
-        std::cout << ec.message() << "" << std::endl;
-    });
-
-#ifdef CINATRA_ENABLE_SSL
-    std::cout << "enable ssl!" << std::endl;
-    client.set_ssl_context_callback([](boost::asio::ssl::context& ctx) {
-        ctx.set_verify_mode(boost::asio::ssl::context::verify_peer);
-        ctx.load_verify_file("server.crt");
-    });
-#endif
-
-    bool r = client.connect("127.0.0.1", 9000, is_ssl);
-    if (!r) {
-        std::cout << "client connect failed!" << std::endl;
-        return;
-    }
-
-    for (size_t i = 0; i < 100; i++) {
-        try {
-            auto result = client.call<std::string>("echo", "purecpp");
-            std::cout << result << " sync" << std::endl;
-        } catch (const std::exception& e) {
-            std::cout << e.what() << " sync" << std::endl;
-        }        
-
-        auto future = client.async_call<CallModel::future>("echo", "purecpp");
-        auto status = future.wait_for(std::chrono::milliseconds(5000));
-        if (status == std::future_status::timeout) {
-            std::cout << "timeout future" << std::endl;
-        } else {
-            auto result1 = future.get();
-            std::cout << result1.as<std::string>() << " future" << std::endl;
-        }
-
-        client.async_call("echo", [](const boost::system::error_code &ec, string_view data) {
-            if (ec) {                
-                std::cout << "error code: " << ec.value()
-                          << ", error msg: "<< ec.message() << std::endl;
-                return;
-            } else {
-                auto result = as<std::string>(data);
-                std::cout << result << " async" << std::endl;
-            }
-        }, "purecpp");
-    }
-
-    std::getchar();
-    std::cout << "test_ssl finished!" << std::endl;
-}
-
-void test_add() {
-    std::cout << "test_add start!" << std::endl;
-
-    try {
-        rpc_client client("127.0.0.1", 9000);
-        bool r = client.connect();
-        if (!r) {
-            std::cout << "connect failed!" << std::endl;
-            return;
-        }
-
-        {
-            auto result = client.call<int>("add", 1, 2);
-            std::cout << result << std::endl;
-        }
-
-        {
-            auto result = client.call<2000, int>("add", 1, 2);
-            std::cout << result << std::endl;
-        }
-    } catch (const std::exception & e) {
-        std::cout << e.what() << std::endl;
-    }
-
-    std::getchar();
-    std::cout << "test_add finished!" << std::endl;
-}
-
-void test_translate() {
-    std::cout << "test_translate start!" << std::endl;
-
-    try {
-        rpc_client client("127.0.0.1", 9000);
-        bool r = client.connect();
-        if (!r) {
-            std::cout << "connect failed!" << std::endl;
-            return;
-        }
-
-        auto result = client.call<std::string>("translate", "hello");
-        std::cout << result << std::endl;
-    } catch (const std::exception & e) {
-        std::cout << e.what() << std::endl;
-    }
-
-    std::getchar();
-    std::cout << "test_translate finished!" << std::endl;
-}
-
-void test_hello() {
-    std::cout << "test_hello start!" << std::endl;
-
-    try {
-        rpc_client client("127.0.0.1", 9000);
-        bool r = client.connect();
-        if (!r) {
-            std::cout << "connect failed!" << std::endl;
-            return;
-        }
-
-        client.call("hello", "purecpp");
-    } catch (const std::exception & e) {
-        std::cout << e.what() << std::endl;
-    }
-
-    std::getchar();
-    std::cout << "test_hello finished!" << std::endl;
-}
-
-void test_get_person_name() {
-    std::cout << "test_get_person_name start!" << std::endl;
-
-    try {
-        rpc_client client("127.0.0.1", 9000);
-        bool r = client.connect();
-        if (!r) {
-            std::cout << "connect failed!" << std::endl;
-            return;
-        }
-
-        auto result = client.call<std::string>("get_person_name", person{ 1, "tom", 20 });
-        std::cout << result << std::endl;
-    } catch (const std::exception & e) {
-        std::cout << e.what() << std::endl;
-    }
-
-    std::getchar();
-    std::cout << "test_get_person_name finished!" << std::endl;
-}
-
-void test_get_person() {
-    std::cout << "test_get_person start!" << std::endl;
-
-    try {
-        rpc_client client("127.0.0.1", 9000);
-        bool r = client.connect();
-        if (!r) {
-            std::cout << "connect failed!" << std::endl;
-            return;
-        }
-
-        auto result = client.call<person>("get_person");
-        std::cout << result.name << std::endl;
-    } catch (const std::exception & e) {
-        std::cout << e.what() << std::endl;
-    }
-    std::getchar();
-    std::cout << "test_get_person finished!" << std::endl;
-}
-
-void test_sync_demo() {
-    test_add();
-    test_translate();
-    test_hello();
-    test_get_person_name();
-    test_get_person();
-}
-
-void test_async_demo() {
-    std::cout << "test_async_demo start!" << std::endl;
-
-    rpc_client client("127.0.0.1", 9000);
-    bool r = client.connect();
-    if (!r) {
-        std::cout << "connect failed!" << std::endl;
-        return;
-    }
-
-    client.set_error_callback([](boost::system::error_code ec) { std::cout << ec.message() << std::endl; });
-
-    auto f = client.async_call<FUTURE>("get_person");
-    if (f.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout) {
-        std::cout << "timeout" << std::endl;
-    } else {
-        auto p = f.get().as<person>();
-        std::cout << p.name << std::endl;
-    }
-
-    auto fu = client.async_call<FUTURE>("hello", "purecpp");
-    fu.get().as(); //no return
-
-    // sync call
-    client.call("hello", "purecpp");
-    auto p = client.call<person>("get_person");
-
-    std::getchar();
-    std::cout << "test_async_demo finished!" << std::endl;
-}
-
-void test_upload() {
+void test_upload(bool is_ssl=true) {
     std::cout << "test_upload start!" << std::endl;
 
-    rpc_client client("127.0.0.1", 9000);
-    bool r = client.connect(1);
+    rpc_client client;
+    bool r = client_connect(client, true, 9000, "127.0.0.1", 1);
     if (!r) {
         std::cout << "connect failed!" << std::endl;
         return;
@@ -325,11 +214,11 @@ void test_upload() {
     std::cout << "test_upload finished!" << std::endl;
 }
 
-void test_download() {
+void test_download(bool is_ssl=true) {
     std::cout << "test_download start!" << std::endl;
 
-    rpc_client client("127.0.0.1", 9000);
-    bool r = client.connect(1);
+    rpc_client client;
+    bool r = client_connect(client, true, 9000, "127.0.0.1", 1);
     if (!r) {
         std::cout << "connect failed!" << std::endl;
         return;
@@ -349,111 +238,6 @@ void test_download() {
     std::cout << "test_download finished!" << std::endl;
 }
 
-void test_sync_performance() {
-    std::cout << "test_sync_performance start!" << std::endl;
-
-    rpc_client client("127.0.0.1", 9000);
-    bool r = client.connect();
-    if (!r) {
-        std::cout << "connect failed!" << std::endl;
-        return;
-    }
-
-    person p{ 1, "tom", 20 };
-
-    try {
-        for (size_t i = 0; i < 10000; i++) {
-            client.call<std::string>("get_name", p);
-        }
-        std::cout << "finish" << std::endl;
-    } catch (const std::exception & ex) {
-        std::cout << ex.what() << std::endl;
-    }
-
-    std::getchar();
-    std::cout << "test_sync_performance finished!" << std::endl;
-}
-
-void test_async_performance() {
-    std::cout << "test_async_performance start!" << std::endl;
-
-    rpc_client client("127.0.0.1", 9000);
-    bool r = client.connect();
-    if (!r) {
-        std::cout << "connect failed!" << std::endl;
-        return;
-    }
-
-    person p{ 1, "tom", 20 };
-
-    for (size_t i = 0; i < 10000; i++) {
-        auto future = client.async_call<FUTURE>("get_name", p);
-        auto status = future.wait_for(std::chrono::seconds(2));
-        if (status == std::future_status::deferred) {
-            std::cout << "deferred" << std::endl;
-        } else if (status == std::future_status::timeout) {
-            std::cout << "timeout" << std::endl;
-        } else if (status == std::future_status::ready) {
-        }
-    }
-
-    std::getchar();
-    std::cout << "test_async_performance finished!" << std::endl;
-}
-
-template <typename T>
-void test_multi_client_performance(size_t n, T & func) {
-    std::cout << "test_multi_client_performance start!" << std::endl;
-
-    std::vector<std::shared_ptr<std::thread>> group;
-    for (int i = 0; i < n; ++i) {
-        group.emplace_back(std::make_shared<std::thread>([&func]{ return func(); }));
-    }
-    for (auto& p : group) {
-        p->join();
-    }
-
-    std::getchar();
-    std::cout << "test_multi_client_performance finished!" << std::endl;
-}
-
-void test_connect() {
-    std::cout << "test_connect start!" << std::endl;
-
-    rpc_client client;
-    client.enable_auto_reconnect(); //automatic reconnect
-    client.enable_auto_heartbeat(); //automatic heartbeat
-    bool r = client.connect("127.0.0.1", 9000);
-    int count = 0;
-    while (true) {
-        if (client.has_connected()) {
-            std::cout << "connected ok" << std::endl;
-            break;
-        } else {
-            std::cout << "connected failed: "<< count++<<"" << std::endl;
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-
-    //{
-    //    rpc_client client;
-    //    bool r = client.connect("127.0.0.1", 9000);
-    //    int count = 0;
-    //    while (true) {
-    //        if (client.connect()) {
-    //            std::cout << "connected ok" << std::endl;
-    //            break;
-    //        }
-    //        else {
-    //            std::cout << "connected failed: " << count++ << "" << std::endl;
-    //        }
-    //    }
-    //}
-
-    std::getchar();
-    std::cout << "test_connect finished!" << std::endl;
-}
-
 void wait_for_notification(rpc_client & client) {
     client.async_call<0>("sub", [&client](const boost::system::error_code &ec, string_view data) {
         auto str = as<std::string>(data);
@@ -463,13 +247,13 @@ void wait_for_notification(rpc_client & client) {
     });
 }
 
-void test_subscribe() {
+void test_subscribe(bool is_ssl=true) {
     std::cout << "test_subscribe start!" << std::endl;
 
     rpc_client client;
     client.enable_auto_reconnect();
     client.enable_auto_heartbeat();
-    bool r = client.connect("127.0.0.1", 9000);
+    bool r = client_connect(client, is_ssl, 9000, "127.0.0.1");
     if (!r) {
         return;
     }
@@ -481,21 +265,20 @@ void test_subscribe() {
     client.subscribe("key", "048a796c8a3c6a6b7bd1223bf2c8cee05232e927b521984ba417cb2fca6df9d1", [](string_view data) {
         msgpack_codec codec;
         person p = codec.unpack<person>(data.data(), data.size());
-        std::cout << p.name << "" << std::endl;
+        std::cout << p.name << std::endl;
     });
 
     client.subscribe("key1", "048a796c8a3c6a6b7bd1223bf2c8cee05232e927b521984ba417cb2fca6df9d1", [](string_view data) {
-        std::cout << data << "" << std::endl;
+        std::cout << data << std::endl;
     });
 
-    bool stop = false;
-    std::thread thd1([&client, &stop] {
+    std::thread thd([&client] {
         auto loop = 100;
         while (loop > 0) {
             loop -= 1;
             try {
                 if (client.has_connected()) {
-                    int r = client.call<int>("add", 2, 3);
+                    auto r = client.call<std::string>("echo", "test subscribe");
                     std::cout << "add result: " << r << "" << std::endl;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -505,7 +288,7 @@ void test_subscribe() {
         }
     });
 
-    thd1.join();
+    thd.detach();
 
     /*rpc_client client1;
     bool r1 = client1.connect("127.0.0.1", 9000);
@@ -534,31 +317,20 @@ void test_subscribe() {
     std::cout << "test_subscribe finished!" << std::endl;
 }
 
-void test_threads() {
+void test_threads(bool is_ssl=true) {
     std::cout << "test_threads start!" << std::endl;
 
     rpc_client client;
-    bool r = client.connect("127.0.0.1", 9000);
+    bool r = client_connect(client, is_ssl, 9000, "127.0.0.1");
     if (!r) {
         return;
     }
 
     size_t scale = 1000;
-    for (size_t i = 0; i < scale; i++) {
-        auto future = client.async_call<FUTURE>("echo", "test");
-        auto status = future.wait_for(std::chrono::seconds(2));
-        if (status == std::future_status::timeout) {
-            std::cout << "timeout" << std::endl;
-        } else if (status == std::future_status::ready) {
-            std::string content = future.get().as<std::string>();
-        }
-        std::this_thread::sleep_for(std::chrono::microseconds(2));
-    }
-    std::cout << "without thread finished!" << std::endl;
 
-    std::thread thd1([scale, &client] {
-        for (size_t i = scale; i < 2*scale; i++) {
-            auto future = client.async_call<FUTURE>("echo", "service: echo");
+    {
+        for (size_t i = 0; i < scale; i++) {
+            auto future = client.async_call<FUTURE>("echo", "test");
             auto status = future.wait_for(std::chrono::seconds(2));
             if (status == std::future_status::timeout) {
                 std::cout << "timeout" << std::endl;
@@ -567,62 +339,60 @@ void test_threads() {
             }
             std::this_thread::sleep_for(std::chrono::microseconds(2));
         }
-        std::cout << "child thread 1 finished!" << std::endl;
-    });
-    
-    std::thread thd2([scale, &client] {
-        for (size_t i = 2*scale; i < 3*scale; i++) {
-            client.async_call("get_int", [i](const boost::system::error_code &ec, string_view data) {
-                if (ec) {
-                    std::cout << "error code: " << ec.value()
-                              << ", error msg: "<< ec.message() << std::endl;
-                    return;
-                } else {
-                    int r = as<int>(data);
-                    if (r != i) {
-                        std::cout << "error not match" << std::endl;
-                    }
-                }
-            }, i);
-            std::this_thread::sleep_for(std::chrono::microseconds(2));
-        }
-        std::cout << "child thread 2 finished!" << std::endl;
-    });
+        std::cout << "without thread finished!" << std::endl;
+    }
 
-    thd1.join();
-    thd2.join();
+    {
+        std::thread thd([scale, &client] {
+            for (size_t i = scale; i < 2*scale; i++) {
+                auto future = client.async_call<FUTURE>("echo", "service: echo");
+                auto status = future.wait_for(std::chrono::seconds(2));
+                if (status == std::future_status::timeout) {
+                    std::cout << "timeout" << std::endl;
+                } else if (status == std::future_status::ready) {
+                    std::string content = future.get().as<std::string>();
+                }
+                std::this_thread::sleep_for(std::chrono::microseconds(2));
+            }
+            std::cout << "child thread 1 finished!" << std::endl;
+        });
+        thd.join();
+        // thd.detach();
+    }
 
     std::getchar();
     std::cout << "test_threads finished!" << std::endl;
 }
 
-void test_multiple_thread() {
+void test_multiple_thread(bool is_ssl=true) {
     std::cout << "test_multiple_thread start!" << std::endl;
 
-    std::vector<std::shared_ptr<rpc_client>> cls;
-    std::vector<std::shared_ptr<std::thread>> v;
+    person p = { 1, "Tom", 20 };
+    std::vector<std::shared_ptr<rpc_client>> clients;
+    std::vector<std::shared_ptr<std::thread>> threads;
     for (int j = 0; j < 4; ++j) {
         auto client = std::make_shared<rpc_client>();
-        cls.push_back(client);
-        bool r = client->connect("127.0.0.1", 9000);
+        clients.push_back(client);
+        bool r = client->connect("127.0.0.1", 9000, is_ssl);
         if (!r) {
             return;
         }
 
         for (size_t i = 0; i < 2; i++) {
-            person p{ 1, "tom", 20 };
-            v.emplace_back(std::make_shared<std::thread>([client] {
-                person p{ 1, "tom", 20 };
+            threads.emplace_back(std::make_shared<std::thread>([&client, &p] {
                 for (size_t i = 0; i < 10000; i++) {
-                    client->async_call<0>("get_name",
+                    client->async_call<0>("get_person_name",
                         [](const boost::system::error_code &ec, string_view data) {
                             if (ec) {
                                 std::cout << "error code: " << ec.value()
-                                          << ", error msg: "<< ec.message() << std::endl;
+                                        << ", error msg: "<< ec.message() << std::endl;
+                            } else {
+                                auto str = as<std::string>(data);
+                                std::cout << "echo " << str << std::endl;
                             }
                         }, p);
 
-                    //auto future = client->async_call<FUTURE>("get_name", p);
+                    //auto future = client->async_call<FUTURE>("get_person_name", p);
                     //auto status = future.wait_for(std::chrono::seconds(2));
                     //if (status == std::future_status::deferred) {
                     //    std::cout << "deferred" << std::endl;
@@ -633,39 +403,39 @@ void test_multiple_thread() {
                     //else if (status == std::future_status::ready) {
                     //}
 
-                    //client->call<std::string>("get_name", p);
+                    //client->call<std::string>("get_person_name", p);
                 }
             }));
         }
     }
 
-    for (auto &thd : v) {
-        thd->join();
+    for (auto& thd : threads) {
+        thd->detach();
     }
 
     std::getchar();
     std::cout << "test_multiple_thread finished!" << std::endl;
 }
 
-void test_post_latency() {
-    std::cout << "test_benchmark start!" << std::endl;
+void test_get_latency(bool is_ssl=true) {
+    std::cout << "test_get_latency start!" << std::endl;
 
     rpc_client client;
-    bool r = client.connect("127.0.0.1", 9000);
+    bool r = client_connect(client, is_ssl, 9000, "127.0.0.1");
     if (!r) {
         return;
     }
 
     {
         for (size_t i = 0; i < 10000; i++) {
-            auto r = client.call<10, double>("post_latency", std::chrono::system_clock::now());
-            std::cout << "sync post latency: " << r << " ms" << std::endl;
+            auto r = client.call<10, double>("get_latency", std::chrono::system_clock::now());
+            std::cout << "sync get latency: " << r << " ms" << std::endl;
         }
     }
 
     // {
-    //     for (size_t i = 0; i < 1000000; i++) {
-    //         client.async_call<5000>("post_latency",
+    //     for (size_t i = 0; i < 10000; i++) {
+    //         client.async_call<5000>("get_latency",
     //                     [i](const boost::system::error_code &ec, string_view data) {
     //                         if (ec) {
     //                             std::cout << "error code: " << ec.value()
@@ -677,55 +447,147 @@ void test_post_latency() {
     //         std::cout << "async post latency: " << r << std::endl;
     //     }
     // }
+
+    std::getchar();
+    std::cout << "test_get_latency finished!" << std::endl;
 }
 
-void test_benchmark(){
+void test_benchmark(bool is_ssl=true){
     std::cout << "test_benchmark start!" << std::endl;
 
     rpc_client client;
-    bool r = client.connect("127.0.0.1", 9000);
+    bool r = client_connect(client, is_ssl, 9000, "127.0.0.1");
     if (!r) {
         return;
     }
 
-    for (size_t i = 0; i < 10000; i++) {
-        client.async_call<100>("echo",
-            [i](const boost::system::error_code &ec, string_view data) {
-                if (ec) {
-                    std::cout << "error code: " << ec.value()
-                              << ", error msg: "<< ec.message() << std::endl;
-                } else {
-                    std::cout << "non error: " << i << std::endl;
-                }
-        }, "hello wolrd");
+    {
+        for (size_t i = 0; i < 10000; i++) {
+            client.async_call<100>("echo",
+                [i](const boost::system::error_code &ec, string_view data) {
+                    if (ec) {
+                        std::cout << "error code: " << ec.value()
+                                << ", error msg: "<< ec.message() << std::endl;
+                    } else {
+                        std::cout << "non error: " << i << std::endl;
+                    }
+            }, "benchmark 1");
+        }
     }
 
-    for (size_t i = 0; i < 100000; i++) {
-        client.async_call<500>("async_echo",
-            [i](const boost::system::error_code &ec, string_view data) {
-                if (ec) {
-                    std::cout << "error code: " << ec.value()
-                              << ", error msg: "<< ec.message() << std::endl;
-                } else {
-                    std::cout << "non error: " << i << std::endl;
-                }
-        }, "hello wolrd");
+    {
+        for (size_t i = 0; i < 100000; i++) {
+            client.async_call<500>("async_echo",
+                [i](const boost::system::error_code &ec, string_view data) {
+                    if (ec) {
+                        std::cout << "error code: " << ec.value()
+                                  << ", error msg: " << ec.message() << std::endl;
+                    } else {
+                        std::cout << "non error: " << i << std::endl;
+                    }
+            }, "benchmark 2");
+        }
     }
 
-    for (size_t i = 0; i < 300000; i++) {
-        client.async_call<5000>("async_echo",
-            [i](const boost::system::error_code &ec, string_view data) {
-                if (ec) {
-                    std::cout << "error code: " << ec.value()
-                              << ", error msg: "<< ec.message() << std::endl;
-                } else {
-                    std::cout << "non error: " << i << std::endl;
-                }
-        }, "hello wolrd");
+    {
+        for (size_t i = 0; i < 300000; i++) {
+            client.async_call<5000>("async_echo",
+                [i](const boost::system::error_code &ec, string_view data) {
+                    if (ec) {
+                        std::cout << "error code: " << ec.value()
+                                  << ", error msg: " << ec.message() << std::endl;
+                    } else {
+                        std::cout << "non error: " << i << std::endl;
+                    }
+            }, "benchmark 3");
+        }
     }
 
     // client.run();
 
     std::getchar();
     std::cout << "test_benchmark finished!" << std::endl;
+}
+
+
+void test_sync_performance(bool is_ssl=true) {
+    std::cout << "test_sync_performance start!" << std::endl;
+
+    rpc_client client;
+    bool r = client_connect(client, is_ssl, 9000, "127.0.0.1");
+    if (!r) {
+        std::cout << "connect failed!" << std::endl;
+        return;
+    }
+
+    try {
+        person p = { 1, "Tom", 20 };
+        for (size_t i = 0; i < 10000; i++) {
+            client.call<std::string>("get_person_name", p);
+        }
+        std::cout << "finish" << std::endl;
+    } catch (const std::exception & ex) {
+        std::cout << ex.what() << std::endl;
+    }
+
+    std::getchar();
+    std::cout << "test_sync_performance finished!" << std::endl;
+}
+
+void test_async_performance(bool is_ssl=true) {
+    std::cout << "test_async_performance start!" << std::endl;
+
+    rpc_client client;
+    bool r = client_connect(client, is_ssl, 9000, "127.0.0.1");
+    if (!r) {
+        std::cout << "connect failed!" << std::endl;
+        return;
+    }
+
+    {
+        person p = {1, "Tom", 20};
+        std::vector<std::future<req_result>> futures;
+        // for (size_t i = 0; i < 10000; i++) {
+        //     auto future = client.async_call<FUTURE>("get_person_name", p);
+        //     auto status = future.wait_for(std::chrono::milliseconds(10));
+        //     if (status == std::future_status::deferred) {
+        //         std::cout << "deferred" << std::endl;
+        //     } else if (status == std::future_status::timeout) {
+        //         std::cout << "timeout" << std::endl;
+        //     } else if (status == std::future_status::ready) {
+        //     }
+        // }
+        for (size_t i = 0; i < 10000; i++) {
+            futures.push_back(client.async_call<FUTURE>("get_person_name", p));
+        }
+
+        for (auto& future : futures) {
+            auto status = future.wait_for(std::chrono::milliseconds(100));
+            if (status == std::future_status::deferred) {
+                std::cout << "deferred" << std::endl;
+            } else if (status == std::future_status::timeout) {
+                std::cout << "timeout" << std::endl;
+            } else if (status == std::future_status::ready) {
+            }
+        }
+    }
+
+    std::getchar();
+    std::cout << "test_async_performance finished!" << std::endl;
+}
+
+template <typename T>
+void test_multi_client_performance(size_t n, T & func, bool is_ssl=true) {
+    std::cout << "test_multi_client_performance start!" << std::endl;
+
+    std::vector<std::shared_ptr<std::thread>> group;
+    for (int i = 0; i < n; ++i) {
+        group.emplace_back(std::make_shared<std::thread>([&func, is_ssl](){ return func(is_ssl); }));
+    }
+    for (auto& p : group) {
+        p->detach();
+    }
+
+    std::getchar();
+    std::cout << "test_multi_client_performance finished!" << std::endl;
 }

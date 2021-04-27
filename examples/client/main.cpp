@@ -1,23 +1,22 @@
 #include "test.hpp"
 
 int main() {
-    test_connect();
-    test_sync_call();
-    test_async_call();
-    test_sync_demo();
-    test_async_demo();
-    test_threads();
-    // test_multiple_thread();
-    test_ssl();
-    test_upload();
-    test_download();
-    test_subscribe();
-    test_post_latency();
-    test_benchmark();
-    test_sync_performance();
-    test_async_performance();
-    test_multi_client_performance(20, test_sync_performance);
-    test_multi_client_performance(20, test_async_performance);
+    bool with_ssl = false;
+
+    test_connect(with_ssl);
+    test_sync_call(with_ssl);
+    test_async_call(with_ssl);
+    test_threads(with_ssl);
+    // test_multiple_thread(with_ssl);
+    test_upload(with_ssl);
+    test_download(with_ssl);
+    test_subscribe(with_ssl);
+    test_get_latency(with_ssl);
+    test_benchmark(with_ssl);
+    test_sync_performance(with_ssl);
+    test_async_performance(with_ssl);
+    test_multi_client_performance(20, test_sync_performance, with_ssl);
+    test_multi_client_performance(20, test_async_performance, with_ssl);
 
     return 0;
 }

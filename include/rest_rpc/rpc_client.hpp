@@ -187,7 +187,7 @@ public:
     err_cb_ = std::move(f);
   }
 
-  uint64_t reqest_id() { return temp_req_id_; }
+  uint64_t reqest_id() { return req_id_tmp_; }
 
   bool has_connected() const { return has_connected_; }
 
@@ -266,7 +266,8 @@ public:
       std::lock_guard<std::mutex> lock(cb_mtx_);
       fu_id_++;
       fu_id = fu_id_;
-      future_map_.emplace(fu_id, std::move(p));
+      auto status = future_map_.emplace(fu_id, std::move(p));
+      assert(status.second);
     }
 
     msgpack_codec codec;
@@ -307,20 +308,22 @@ public:
       return;
     }
 
-    uint64_t cb_id = 0;
+    uint64_t req_id = 0;
+    uint64_t req_flag = 1;
     {
       std::lock_guard<std::mutex> lock(cb_mtx_);
       callback_id_++;
-      callback_id_ |= (uint64_t(1) << 63);
-      cb_id = callback_id_;
+      callback_id_ |= (req_flag << 63);
+      req_id = callback_id_;
       auto call = std::make_shared<call_t>(ios_, std::move(cb), TIMEOUT);
       call->start_timer();
-      callback_map_.emplace(cb_id, call);
+      auto status = callback_map_.emplace(req_id, call);
+      assert(status.second);
     }
 
     msgpack_codec codec;
     auto ret = codec.pack_args(rpc_name, std::forward<Args>(args)...);
-    write(cb_id, request_type::req_res, std::move(ret));
+    write(req_id, request_type::req_res, std::move(ret));
   }
 
   void stop() {
@@ -337,12 +340,11 @@ public:
     auto it = sub_map_.find(key);
     if (it != sub_map_.end()) {
       assert("duplicated subscribe");
-      return;
+    } else {
+      sub_map_.emplace(key, std::move(f));
+      send_subscribe(key, "");
+      key_token_set_.emplace(std::move(key), "");
     }
-
-    sub_map_.emplace(key, std::move(f));
-    send_subscribe(key, "");
-    key_token_set_.emplace(std::move(key), "");
   }
 
   template <typename Func>
@@ -351,12 +353,11 @@ public:
     auto it = sub_map_.find(composite_key);
     if (it != sub_map_.end()) {
       assert("duplicated subscribe");
-      return;
+    } else {
+      sub_map_.emplace(std::move(composite_key), std::move(f));
+      send_subscribe(key, token);
+      key_token_set_.emplace(std::move(key), std::move(token));
     }
-
-    sub_map_.emplace(std::move(composite_key), std::move(f));
-    send_subscribe(key, token);
-    key_token_set_.emplace(std::move(key), std::move(token));
   }
 
   template <typename T, size_t TIMEOUT = 3>
@@ -445,13 +446,13 @@ private:
     assert(size < MAX_BUF_LEN);
     client_message_type msg{req_id, type, {message.release(), size}};
 
-    std::lock_guard<std::mutex> lock(write_mtx_);
+    std::unique_lock<std::mutex> lock(write_mtx_);
     outbox_.emplace_back(std::move(msg));
-
     if (outbox_.size() > 1) {
       // outstanding async_write
       return;
     } else {
+      lock.unlock();
       write();
     }
   }
@@ -470,7 +471,6 @@ private:
         has_connected_ = false;
         close(false);
         error_callback(ec);
-        return;
       } else {
         std::lock_guard<std::mutex> lock(write_mtx_);
         if (outbox_.empty()) {
@@ -478,7 +478,6 @@ private:
         } else {
           ::free((char *)outbox_.front().content.data());
           outbox_.pop_front();
-
           if (!outbox_.empty()) {
             // more messages to send
             this->write();
@@ -522,7 +521,7 @@ private:
 
   void read_body(std::uint64_t req_id, request_type req_type, size_t body_len) {
     async_read(body_len, [this, req_id, req_type, body_len](
-                             boost::system::error_code ec, std::size_t length) {
+                         boost::system::error_code ec, std::size_t length) {
       // cancel_timer();
       if (!socket_.is_open()) {
         std::cout << "socket already closed" << std::endl;
@@ -569,6 +568,13 @@ private:
 
   void call_back(uint64_t req_id, const boost::system::error_code &ec,
                  string_view data) {
+    if (ec) {
+      std::cout << ec.message() << std::endl;
+      return;
+    }
+
+    std::unique_lock<std::mutex> lock(cb_mtx_);
+
     if (client_language_ == client_language_t::JAVA) {
       // For Java client.
       // TODO(qwang): Call java callback.
@@ -576,40 +582,34 @@ private:
       on_result_received_callback_(req_id, std::string(data.data(), data.size()));
     } else {
       // For CPP client.
-      
-      temp_req_id_ = req_id;
-      auto cb_flag = req_id >> 63;
-      if (cb_flag) {
-        std::unique_lock<std::mutex> lock(cb_mtx_);
-        std::shared_ptr<call_t> cb_ptr(std::move(callback_map_[req_id]));
+      req_id_tmp_ = req_id;
+      uint64_t req_flag = req_id >> 63;
+      if (req_flag) {
+        // std::shared_ptr<call_t> cb_ptr(std::move(callback_map_[req_id]));
+        auto & cb_ptr = callback_map_[req_id];
 
-        lock.unlock();
-
-        assert(cb_ptr);
-        if (!cb_ptr->has_timeout()) {
-          cb_ptr->cancel();
-          cb_ptr->callback(ec, data);
+        if (cb_ptr) {
+          if (!cb_ptr->has_timeout()) {
+            cb_ptr->cancel();
+            cb_ptr->callback(ec, data);
+          } else {
+            cb_ptr->callback(asio::error::make_error_code(asio::error::timed_out), {});
+          }
         } else {
-          cb_ptr->callback(asio::error::make_error_code(asio::error::timed_out), {});
+          // assert(cb_ptr);
         }
-
-        lock.lock();
 
         callback_map_.erase(req_id);
       } else {
-        std::lock_guard<std::mutex> lock(cb_mtx_);
-        auto &f = future_map_[req_id];
-        if (ec) {
-          // std::cout << ec.message() << std::endl;
-          if (!f) {
-            // std::cout << "invalid req_id" << std::endl;
-            return;
-          }
-        }
+        // std::shared_ptr<std::promise<req_result>> f_ptr(std::move(future_map_[req_id]));
+        auto & f_ptr = future_map_[req_id];
 
-        assert(f);
-        f->set_value(req_result{data});
-        future_map_.erase(req_id);
+        if (f_ptr) {
+          f_ptr->set_value(req_result{data});
+          future_map_.erase(req_id);
+        } else {
+          // assert(f_ptr);
+        }
       }
     }
   }
@@ -842,7 +842,7 @@ private:
   std::mutex cb_mtx_;
   uint64_t callback_id_ = 0;
 
-  uint64_t temp_req_id_ = 0;
+  uint64_t req_id_tmp_ = 0;
 
   char head_[HEAD_LEN] = {};
   std::vector<char> body_;
