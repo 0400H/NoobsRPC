@@ -27,7 +27,7 @@ void test_sync_call() {
     }
 
     {
-        auto result = client.call<std::string>("echo", "task1");
+        auto result = client.call<std::string>("echo", "service: echo");
         std::cout << result << std::endl;
     }
 
@@ -62,15 +62,15 @@ void test_async_call() {
         std::string task1 = "task_" + std::to_string(i);
         // zero means no timeout check, no param means using default timeout(5s)
         client.async_call<0>("echo", 
-            [](boost::system::error_code ec, string_view data) {
+            [](const boost::system::error_code &ec, string_view data) {
                 auto str = as<std::string>(data);
                 std::cout << "echo " << str << std::endl;
             }, task1);
 
         std::string task2 = "task_" + std::to_string(i+1);
         // set timeout 500ms
-        client.async_call<5000>("async_echo",
-            [](boost::system::error_code ec, string_view data) {
+        client.async_call<500>("async_echo",
+            [](const boost::system::error_code &ec, string_view data) {
                 if (ec) {
                     std::cout << "error code: " << ec.value()
                               << ", error msg: "<< ec.message() << std::endl;
@@ -127,7 +127,7 @@ void test_ssl() {
             std::cout << result1.as<std::string>() << " future" << std::endl;
         }
 
-        client.async_call("echo", [](boost::system::error_code ec, string_view data) {
+        client.async_call("echo", [](const boost::system::error_code &ec, string_view data) {
             if (ec) {                
                 std::cout << "error code: " << ec.value()
                           << ", error msg: "<< ec.message() << std::endl;
@@ -284,7 +284,7 @@ void test_async_demo() {
     auto fu = client.async_call<FUTURE>("hello", "purecpp");
     fu.get().as(); //no return
 
-    //sync call
+    // sync call
     client.call("hello", "purecpp");
     auto p = client.call<person>("get_person");
 
@@ -312,17 +312,7 @@ void test_upload() {
     std::cout << file_len << std::endl;
 
     {
-        auto f = client.async_call<FUTURE>("upload", "test", conent);
-        if (f.wait_for(std::chrono::milliseconds(500)) == std::future_status::timeout) {
-            std::cout << "timeout" << std::endl;
-        } else {
-            f.get().as();
-            std::cout << "ok" << std::endl;
-        }
-    }
-
-    {
-        auto f = client.async_call<FUTURE>("upload", "test1", conent);
+        auto f = client.async_call<FUTURE>("upload", "upload_file", conent);
         if (f.wait_for(std::chrono::milliseconds(500)) == std::future_status::timeout) {
             std::cout << "timeout" << std::endl;
         } else {
@@ -384,22 +374,6 @@ void test_sync_performance() {
     std::cout << "test_sync_performance finished!" << std::endl;
 }
 
-template <typename T>
-void test_multi_client_performance(size_t n, T & func) {
-    std::cout << "test_multi_client_performance start!" << std::endl;
-
-    std::vector<std::shared_ptr<std::thread>> group;
-    for (int i = 0; i < n; ++i) {
-        group.emplace_back(std::make_shared<std::thread>([&func]{ return func(); }));
-    }
-    for (auto& p : group) {
-        p->join();
-    }
-
-    std::getchar();
-    std::cout << "test_multi_client_performance finished!" << std::endl;
-}
-
 void test_async_performance() {
     std::cout << "test_async_performance start!" << std::endl;
 
@@ -425,6 +399,22 @@ void test_async_performance() {
 
     std::getchar();
     std::cout << "test_async_performance finished!" << std::endl;
+}
+
+template <typename T>
+void test_multi_client_performance(size_t n, T & func) {
+    std::cout << "test_multi_client_performance start!" << std::endl;
+
+    std::vector<std::shared_ptr<std::thread>> group;
+    for (int i = 0; i < n; ++i) {
+        group.emplace_back(std::make_shared<std::thread>([&func]{ return func(); }));
+    }
+    for (auto& p : group) {
+        p->join();
+    }
+
+    std::getchar();
+    std::cout << "test_multi_client_performance finished!" << std::endl;
 }
 
 void test_connect() {
@@ -465,7 +455,7 @@ void test_connect() {
 }
 
 void wait_for_notification(rpc_client & client) {
-    client.async_call<0>("sub", [&client](boost::system::error_code ec, string_view data) {
+    client.async_call<0>("sub", [&client](const boost::system::error_code &ec, string_view data) {
         auto str = as<std::string>(data);
         std::cout << str << std::endl;
 
@@ -500,19 +490,22 @@ void test_subscribe() {
 
     bool stop = false;
     std::thread thd1([&client, &stop] {
-        while (true) {
+        auto loop = 100;
+        while (loop > 0) {
+            loop -= 1;
             try {
                 if (client.has_connected()) {
                     int r = client.call<int>("add", 2, 3);
                     std::cout << "add result: " << r << "" << std::endl;
                 }
-                
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             } catch (const std::exception& ex) {
                 std::cout << ex.what() << "" << std::endl;
             }
         }
     });
+
+    thd1.join();
 
     /*rpc_client client1;
     bool r1 = client1.connect("127.0.0.1", 9000);
@@ -561,18 +554,17 @@ void test_threads() {
         }
         std::this_thread::sleep_for(std::chrono::microseconds(2));
     }
-    std::cout << "father thread finished!" << std::endl;
+    std::cout << "without thread finished!" << std::endl;
 
     std::thread thd1([scale, &client] {
         for (size_t i = scale; i < 2*scale; i++) {
-            auto future = client.async_call<FUTURE>("echo", "test");
+            auto future = client.async_call<FUTURE>("echo", "service: echo");
             auto status = future.wait_for(std::chrono::seconds(2));
             if (status == std::future_status::timeout) {
                 std::cout << "timeout" << std::endl;
             } else if (status == std::future_status::ready) {
                 std::string content = future.get().as<std::string>();
             }
-
             std::this_thread::sleep_for(std::chrono::microseconds(2));
         }
         std::cout << "child thread 1 finished!" << std::endl;
@@ -580,21 +572,25 @@ void test_threads() {
     
     std::thread thd2([scale, &client] {
         for (size_t i = 2*scale; i < 3*scale; i++) {
-            client.async_call("get_int", [i](boost::system::error_code ec, string_view data) {
+            client.async_call("get_int", [i](const boost::system::error_code &ec, string_view data) {
                 if (ec) {
                     std::cout << "error code: " << ec.value()
                               << ", error msg: "<< ec.message() << std::endl;
                     return;
-                }
-                int r = as<int>(data);
-                if (r != i) {
-                    std::cout << "error not match" << std::endl;
+                } else {
+                    int r = as<int>(data);
+                    if (r != i) {
+                        std::cout << "error not match" << std::endl;
+                    }
                 }
             }, i);
             std::this_thread::sleep_for(std::chrono::microseconds(2));
         }
         std::cout << "child thread 2 finished!" << std::endl;
     });
+
+    thd1.join();
+    thd2.join();
 
     std::getchar();
     std::cout << "test_threads finished!" << std::endl;
@@ -619,7 +615,7 @@ void test_multiple_thread() {
                 person p{ 1, "tom", 20 };
                 for (size_t i = 0; i < 10000; i++) {
                     client->async_call<0>("get_name",
-                        [](boost::system::error_code ec, string_view data) {
+                        [](const boost::system::error_code &ec, string_view data) {
                             if (ec) {
                                 std::cout << "error code: " << ec.value()
                                           << ", error msg: "<< ec.message() << std::endl;
@@ -643,8 +639,44 @@ void test_multiple_thread() {
         }
     }
 
+    for (auto &thd : v) {
+        thd->join();
+    }
+
     std::getchar();
     std::cout << "test_multiple_thread finished!" << std::endl;
+}
+
+void test_post_latency() {
+    std::cout << "test_benchmark start!" << std::endl;
+
+    rpc_client client;
+    bool r = client.connect("127.0.0.1", 9000);
+    if (!r) {
+        return;
+    }
+
+    {
+        for (size_t i = 0; i < 10000; i++) {
+            auto r = client.call<10, double>("post_latency", std::chrono::system_clock::now());
+            std::cout << "sync post latency: " << r << " ms" << std::endl;
+        }
+    }
+
+    // {
+    //     for (size_t i = 0; i < 1000000; i++) {
+    //         client.async_call<5000>("post_latency",
+    //                     [i](const boost::system::error_code &ec, string_view data) {
+    //                         if (ec) {
+    //                             std::cout << "error code: " << ec.value()
+    //                                     << ", error msg: "<< ec.message() << std::endl;
+    //                         } else {
+    //                             std::cout << "non error: " << i << std::endl;
+    //                         }
+    //                 }, std::chrono::system_clock::now());
+    //         std::cout << "async post latency: " << r << std::endl;
+    //     }
+    // }
 }
 
 void test_benchmark(){
@@ -656,9 +688,33 @@ void test_benchmark(){
         return;
     }
 
-    for (size_t i = 0; i < 1000000; i++) {
-        client.async_call<5000>("echo",
-            [i](boost::system::error_code ec, string_view data) {
+    for (size_t i = 0; i < 10000; i++) {
+        client.async_call<100>("echo",
+            [i](const boost::system::error_code &ec, string_view data) {
+                if (ec) {
+                    std::cout << "error code: " << ec.value()
+                              << ", error msg: "<< ec.message() << std::endl;
+                } else {
+                    std::cout << "non error: " << i << std::endl;
+                }
+        }, "hello wolrd");
+    }
+
+    for (size_t i = 0; i < 100000; i++) {
+        client.async_call<500>("async_echo",
+            [i](const boost::system::error_code &ec, string_view data) {
+                if (ec) {
+                    std::cout << "error code: " << ec.value()
+                              << ", error msg: "<< ec.message() << std::endl;
+                } else {
+                    std::cout << "non error: " << i << std::endl;
+                }
+        }, "hello wolrd");
+    }
+
+    for (size_t i = 0; i < 300000; i++) {
+        client.async_call<5000>("async_echo",
+            [i](const boost::system::error_code &ec, string_view data) {
                 if (ec) {
                     std::cout << "error code: " << ec.value()
                               << ", error msg: "<< ec.message() << std::endl;

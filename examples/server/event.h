@@ -3,23 +3,23 @@
 #include <thread>
 #include <chrono>
 
-class qps {
+class event {
 public:
     void increase() {
         counter_.fetch_add(1, std::memory_order_release);
     }
 
-    qps() : counter_(0) {
+    event() : counter_(0) {
         thd_ = std::thread([this] {
             while (!stop_) {
-                std::cout << "qps: " << counter_.load(std::memory_order_acquire) << '\n';
+                std::cout << "events num: " << counter_.load(std::memory_order_acquire) << '\n';
                 std::this_thread::sleep_for(std::chrono::seconds(1));
-                //counter_.store(0, std::memory_order_release);
+                // counter_.store(0, std::memory_order_release);
             }
         });
     }
 
-    ~qps() {
+    ~event() {
         stop_ = true;
         thd_.join();
     }

@@ -38,7 +38,7 @@ namespace rest_rpc {
                 {
                     std::lock_guard<std::mutex> lock(mtx_);
                     stop_check_ = true;
-                    cv_.notify_all();                    
+                    cv_.notify_all();
                 }
 
                 check_thread_->join();
@@ -46,7 +46,7 @@ namespace rest_rpc {
                 {
                     std::lock_guard<std::mutex> lock(sub_mtx_);
                     stop_check_pub_sub_ = true;
-                    sub_cv_.notify_all();                    
+                    sub_cv_.notify_all();
                 }
 
                 pub_sub_thread_->join();
